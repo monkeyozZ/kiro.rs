@@ -9,8 +9,8 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, ImportTokenJsonRequest, SetDisabledRequest,
-        SetPriorityRequest, SetRegionRequest, SuccessResponse,
+        AddCredentialRequest, ImportTokenJsonRequest, SetDisabledRequest, SetPriorityRequest,
+        SetRegionRequest, SuccessResponse,
     },
 };
 

@@ -2638,7 +2638,6 @@ impl MultiTokenManager {
     pub fn cleanup_expired_cooldowns(&self) -> usize {
         self.cooldown_manager.cleanup_expired()
     }
-
 }
 
 impl Drop for MultiTokenManager {
