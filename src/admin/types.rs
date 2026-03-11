@@ -182,6 +182,50 @@ pub struct CachedBalancesResponse {
     pub balances: Vec<CachedBalanceItem>,
 }
 
+// ============ 可用模型列表 ============
+
+/// 可用模型列表响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableModelsResponse {
+    /// 凭据 ID
+    pub id: u64,
+    /// 订阅类型
+    pub subscription_title: Option<String>,
+    /// 可用模型列表
+    pub available_models: Vec<ModelItem>,
+}
+
+/// 模型信息项
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelItem {
+    /// 模型 ID
+    pub model_id: String,
+    /// 模型显示名称
+    pub model_name: String,
+    /// 模型描述
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 支持的输入类型
+    pub supported_input_types: Vec<String>,
+    /// Token 限制
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_limits: Option<ModelTokenLimits>,
+}
+
+/// 模型 Token 限制
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTokenLimits {
+    /// 最大输入 token 数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<i64>,
+    /// 最大输出 token 数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<i64>,
+}
+
 // ============ 负载均衡配置 ============
 
 // ============ 通用响应 ============

@@ -13,6 +13,7 @@ import type {
   CredentialAccountInfoResponse,
   ImportTokenJsonRequest,
   ImportTokenJsonResponse,
+  AvailableModelsResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -143,5 +144,11 @@ export async function importTokenJson(
     '/credentials/import-token-json',
     req
   )
+  return data
+}
+
+// 获取凭据可用模型列表
+export async function getAvailableModels(id: number): Promise<AvailableModelsResponse> {
+  const { data } = await api.get<AvailableModelsResponse>(`/credentials/${id}/models`)
   return data
 }

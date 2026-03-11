@@ -466,6 +466,87 @@ pub(crate) async fn get_usage_limits(
     Ok(data)
 }
 
+/// 获取凭证可用的模型列表
+///
+/// 调用 ListAvailableModels API 查询当前凭证实际支持的模型
+pub(crate) async fn list_available_models(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<crate::kiro::model::available_models::AvailableModelsResponse> {
+    tracing::debug!("正在获取可用模型列表...");
+
+    // 使用 codewhisperer API 端点（与 Kiro-Go 保持一致）
+    let region = credentials.effective_api_region(config);
+    let host = format!("codewhisperer.{}.amazonaws.com", region);
+    let machine_id = machine_id::generate_from_credentials(credentials, config)
+        .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+    let kiro_version = &config.kiro_version;
+
+    // 构建 URL
+    let url = format!(
+        "https://{}/ListAvailableModels?origin=AI_EDITOR&maxResults=50",
+        host
+    );
+
+    // 构建 User-Agent headers（与 getUsageLimits 保持一致）
+    let user_agent = format!(
+        "aws-sdk-js/1.0.27 ua/2.1 os/linux lang/js md/nodejs#22.21.1 \
+         api/codewhispererstreaming#1.0.27 m/E KiroIDE-{}-{}",
+        kiro_version, machine_id
+    );
+    let amz_user_agent = format!(
+        "aws-sdk-js/1.0.27 KiroIDE {} {}",
+        kiro_version, machine_id
+    );
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/json")
+        .header("User-Agent", &user_agent)
+        .header("x-amz-user-agent", &amz_user_agent)
+        .header("x-amzn-codewhisperer-optout", "true")
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        let error_msg = match status.as_u16() {
+            401 => "认证失败，Token 无效或已过期",
+            403 => "权限不足，无法获取模型列表",
+            429 => "请求过于频繁，已被限流",
+            500..=599 => "服务器错误，AWS 服务暂时不可用",
+            _ => "获取模型列表失败",
+        };
+        bail!("{}: {} {}", error_msg, status, body_text);
+    }
+
+    // 先获取原始响应文本，便于调试 JSON 解析错误
+    let body_text = response.text().await?;
+
+    let data: crate::kiro::model::available_models::AvailableModelsResponse =
+        serde_json::from_str(&body_text).map_err(|e| {
+            tracing::error!(
+                "ListAvailableModels JSON 解析失败: {}，原始响应: {}",
+                e,
+                body_text
+            );
+            anyhow::anyhow!("JSON 解析失败: {}", e)
+        })?;
+
+    tracing::info!(
+        "成功获取 {} 个可用模型",
+        data.models.len()
+    );
+
+    Ok(data)
+}
+
 // ============================================================================
 // 多凭据 Token 管理器
 // ============================================================================
@@ -2276,6 +2357,77 @@ impl MultiTokenManager {
         };
 
         get_usage_limits(&credentials, &self.config, &token, self.proxy.as_ref()).await
+    }
+
+    /// 获取指定凭据的可用模型列表（Admin API）
+    pub async fn list_available_models_for(
+        &self,
+        id: u64,
+    ) -> anyhow::Result<crate::kiro::model::available_models::AvailableModelsResponse> {
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+
+        // 检查是否需要刷新 token
+        let needs_refresh = is_token_expired(&credentials) || is_token_expiring_soon(&credentials);
+
+        let token = if needs_refresh {
+            let _guard = self.refresh_lock.lock().await;
+            let current_creds = {
+                let entries = self.entries.lock();
+                entries
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| e.credentials.clone())
+                    .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+            };
+
+            if is_token_expired(&current_creds) || is_token_expiring_soon(&current_creds) {
+                let new_creds =
+                    refresh_token_with_id(&current_creds, &self.config, self.proxy.as_ref(), id)
+                        .await?;
+                {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.credentials = new_creds.clone();
+                        // 更新哈希缓存
+                        entry.refresh_token_hash =
+                            new_creds.refresh_token.as_deref().map(sha256_hex);
+                    }
+                }
+                // 持久化失败只记录警告，不影响本次请求
+                if let Err(e) = self.persist_credentials() {
+                    tracing::warn!("Token 刷新后持久化失败（不影响本次请求）: {}", e);
+                }
+                new_creds
+                    .access_token
+                    .ok_or_else(|| anyhow::anyhow!("刷新后无 access_token"))?
+            } else {
+                current_creds
+                    .access_token
+                    .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?
+            }
+        } else {
+            credentials
+                .access_token
+                .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?
+        };
+
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+
+        list_available_models(&credentials, &self.config, &token, self.proxy.as_ref()).await
     }
 
     /// 添加新凭据（Admin API）

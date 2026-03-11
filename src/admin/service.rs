@@ -211,6 +211,49 @@ impl AdminService {
         CachedBalancesResponse { balances }
     }
 
+    /// 获取凭据的可用模型列表
+    pub async fn get_available_models(
+        &self,
+        id: u64,
+    ) -> Result<super::types::AvailableModelsResponse, AdminServiceError> {
+        // 先获取订阅信息（用于显示）
+        let usage = self
+            .token_manager
+            .get_usage_limits_for(id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        // 获取可用模型列表
+        let models_response = self
+            .token_manager
+            .list_available_models_for(id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        // 转换为 Admin API 响应格式
+        let available_models = models_response
+            .models
+            .into_iter()
+            .map(|m| super::types::ModelItem {
+                model_id: m.model_id,
+                model_name: m.model_name,
+                description: m.description,
+                supported_input_types: m.supported_input_types,
+                token_limits: m.token_limits.map(|tl| super::types::ModelTokenLimits {
+                    max_input_tokens: tl.max_input_tokens,
+                    max_output_tokens: tl.max_output_tokens,
+                }),
+            })
+            .collect();
+
+        Ok(super::types::AvailableModelsResponse {
+            id,
+            subscription_title: usage.subscription_title().map(|s| s.to_string()),
+            available_models,
+        })
+    }
+
+
     /// 添加新凭据
     pub async fn add_credential(
         &self,

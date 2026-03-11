@@ -6,24 +6,21 @@ import { storage } from '@/lib/storage'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CredentialCard } from '@/components/credential-card'
-import { BalanceDialog } from '@/components/balance-dialog'
 import { AddCredentialDialog } from '@/components/add-credential-dialog'
 import { ImportTokenJsonDialog } from '@/components/import-token-json-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
+import { ModelsDialog } from '@/components/models-dialog'
 import { useCredentials, useCachedBalances, useDeleteCredential, useResetFailure } from '@/hooks/use-credentials'
-import { getCredentialBalance } from '@/api/credentials'
+import { getCredentialBalance, getAvailableModels } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import type { BalanceResponse } from '@/types/api'
+import type { BalanceResponse, AvailableModelsResponse } from '@/types/api'
 
 interface DashboardProps {
   onLogout: () => void
 }
 
 export function Dashboard({ onLogout }: DashboardProps) {
-  const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
-  const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
-  const [forceRefreshBalance, setForceRefreshBalance] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -44,6 +41,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
     }
     return false
   })
+  const [modelsDialogOpen, setModelsDialogOpen] = useState(false)
+  const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
+  const [modelsData, setModelsData] = useState<AvailableModelsResponse | null>(null)
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [modelsError, setModelsError] = useState<Error | null>(null)
 
   const queryClient = useQueryClient()
   const { data, isLoading, error, refetch } = useCredentials()
@@ -111,19 +113,26 @@ export function Dashboard({ onLogout }: DashboardProps) {
     document.documentElement.classList.toggle('dark')
   }
 
-  const handleViewBalance = (id: number, forceRefresh: boolean) => {
-    setSelectedCredentialId(id)
-    setForceRefreshBalance(forceRefresh)
-    if (forceRefresh) {
-      // 清除该凭据的余额缓存，强制重新获取
-      queryClient.invalidateQueries({ queryKey: ['credential-balance', id] })
-    }
-    setBalanceDialogOpen(true)
-  }
-
   const handleRefresh = () => {
     refetch()
     toast.success('已刷新凭据列表')
+  }
+
+  const handleViewModels = async (id: number) => {
+    setSelectedCredentialId(id)
+    setModelsDialogOpen(true)
+    setLoadingModels(true)
+    setModelsError(null)
+    setModelsData(null)
+
+    try {
+      const data = await getAvailableModels(id)
+      setModelsData(data)
+    } catch (err) {
+      setModelsError(err as Error)
+    } finally {
+      setLoadingModels(false)
+    }
   }
 
   const handleLogout = () => {
@@ -620,11 +629,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
                     key={credential.id}
                     credential={credential}
                     cachedBalance={cachedBalanceMap.get(credential.id)}
-                    onViewBalance={handleViewBalance}
                     selected={selectedIds.has(credential.id)}
                     onToggleSelect={() => toggleSelect(credential.id)}
                     balance={balanceMap.get(credential.id) || null}
                     loadingBalance={loadingBalanceIds.has(credential.id)}
+                    onViewModels={handleViewModels}
                   />
                 ))}
               </div>
@@ -658,21 +667,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
         </div>
       </main>
 
-      {/* 余额对话框 */}
-      <BalanceDialog
-        credentialId={selectedCredentialId}
-        open={balanceDialogOpen}
-        onOpenChange={(open) => {
-          setBalanceDialogOpen(open)
-          if (!open) {
-            setForceRefreshBalance(false)
-            // 关闭弹窗时刷新缓存余额，让卡片显示最新数据
-            queryClient.invalidateQueries({ queryKey: ['cached-balances'] })
-          }
-        }}
-        forceRefresh={forceRefreshBalance}
-      />
-
       {/* 添加凭据对话框 */}
       <AddCredentialDialog
         open={addDialogOpen}
@@ -685,6 +679,15 @@ export function Dashboard({ onLogout }: DashboardProps) {
         onOpenChange={setImportDialogOpen}
       />
 
+      {/* 模型列表对话框 */}
+      <ModelsDialog
+        credentialId={selectedCredentialId}
+        open={modelsDialogOpen}
+        onOpenChange={setModelsDialogOpen}
+        data={modelsData}
+        isLoading={loadingModels}
+        error={modelsError}
+      />
 
       {/* 批量验活对话框 */}
       <BatchVerifyDialog

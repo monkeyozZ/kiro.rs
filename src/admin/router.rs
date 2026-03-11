@@ -7,9 +7,9 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, delete_credential, get_all_credentials, get_cached_balances,
-        get_credential_balance, import_token_json, reset_failure_count, set_credential_disabled,
-        set_credential_priority, set_credential_region,
+        add_credential, delete_credential, get_all_credentials, get_available_models,
+        get_cached_balances, get_credential_balance, import_token_json, reset_failure_count,
+        set_credential_disabled, set_credential_priority, set_credential_region,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -25,6 +25,7 @@ use super::{
 /// - `POST /credentials/:id/priority` - 设置凭据优先级
 /// - `POST /credentials/:id/reset` - 重置失败计数
 /// - `GET /credentials/:id/balance` - 获取凭据余额
+/// - `GET /credentials/:id/models` - 获取凭据可用模型列表
 /// - `GET /credentials/balances/cached` - 获取所有凭据的缓存余额
 ///
 /// # 认证
@@ -45,6 +46,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/region", post(set_credential_region))
         .route("/credentials/{id}/reset", post(reset_failure_count))
         .route("/credentials/{id}/balance", get(get_credential_balance))
+        .route("/credentials/{id}/models", get(get_available_models))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

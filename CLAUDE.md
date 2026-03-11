@@ -29,10 +29,12 @@ cargo run -- -c config.json --credentials credentials.json
 # 测试
 cargo test
 cargo test <test_name>           # 运行单个测试
+cargo test -- --nocapture        # 显示测试输出
 
 # 代码检查
 cargo fmt          # 格式化
 cargo clippy       # lint
+cargo clippy -- -D warnings      # lint（将警告视为错误）
 
 # 启用敏感日志构建（排障用，输出 token 用量等诊断信息）
 cargo run --features sensitive-logs -- -c config.json --credentials credentials.json
@@ -40,11 +42,18 @@ cargo run --features sensitive-logs -- -c config.json --credentials credentials.
 # 前端开发
 cd admin-ui
 pnpm install
-pnpm dev           # 开发服务器
+pnpm dev           # 开发服务器（http://localhost:5173）
 pnpm build         # 生产构建
 
 # 排障工具
 python tools/test_400_improperly_formed.py  # 测试上游 400 错误场景
+python tools/diagnose_improper_request.py   # 分析日志中的 400 错误
+python tools/analyze_compression.py         # 分析压缩统计
+
+# 日志级别控制
+RUST_LOG=debug cargo run          # 启用 debug 日志
+RUST_LOG=trace cargo run          # 启用 trace 日志（最详细）
+RUST_LOG=kiro_rs=debug cargo run  # 仅本项目 debug，依赖库 info
 ```
 
 ## 请求处理流程
@@ -61,13 +70,13 @@ POST /v1/messages (Anthropic 格式)
 
 ## 核心设计模式
 
-1. **Provider Pattern** - `kiro/provider.rs`: 统一的 API 提供者接口，处理请求转发和重试。支持凭据级代理（每个凭据可配独立 HTTP/SOCKS5 代理，缓存对应 HTTP Client 避免重复创建）
-2. **Multi-Token Manager** - `kiro/token_manager.rs`: 多凭据管理，按优先级故障转移，后台异步刷新 Token（支持 Social 和 IdC 两种认证方式）。余额缓存动态 TTL：高频用户 10 分钟、低频用户 30 分钟、低余额用户 24 小时，过期时异步刷新不阻塞请求
-3. **Protocol Converter** - `anthropic/converter.rs`: Anthropic ↔ Kiro 双向协议转换，包括模型映射（sonnet/opus/haiku → Kiro 模型 ID）、JSON Schema 规范化（修复 MCP 工具的 `required: null` / `properties: null`）、工具占位符生成、图片格式转换
-4. **Event Stream Parser** - `kiro/parser/`: AWS Event Stream 二进制协议解析（header + payload + CRC32C 校验）
-5. **Buffered Stream** - `anthropic/stream.rs`: 两种流模式 — `StreamContext`（直接转发）和 `BufferedStreamContext`（缓冲所有事件，等 `contextUsageEvent` 到达后修正 input_tokens 再一次性发送）
-6. **Input Compressor** - `anthropic/compressor.rs`: 多层压缩管道（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），自动修复 tool_use/tool_result 配对以避免上游 400 错误
-7. **Image Processor** - `image.rs`: 图片处理（缩放、GIF 抽帧、token 计算）。GIF 抽帧策略：最多 20 帧、最多 5fps、按时长自适应采样间隔，输出为 JPEG 静态帧序列
+1. **Provider Pattern** - `kiro/provider.rs`: 统一的 API 提供者接口，处理请求转发和重试。支持凭据级代理（每个凭据可配独立 HTTP/SOCKS5 代理，缓存对应 HTTP Client 避免重复创建）。核心方法：`call_api()` 处理请求发送和重试逻辑
+2. **Multi-Token Manager** - `kiro/token_manager.rs`: 多凭据管理，按优先级故障转移，后台异步刷新 Token（支持 Social 和 IdC 两种认证方式）。余额缓存动态 TTL：高频用户 10 分钟、低频用户 30 分钟、低余额用户 24 小时，过期时异步刷新不阻塞请求。核心方法：`get_next_available_credential()` 选择可用凭据，`report_failure()` 处理失败和冷却
+3. **Protocol Converter** - `anthropic/converter.rs`: Anthropic ↔ Kiro 双向协议转换，包括模型映射（sonnet/opus/haiku → Kiro 模型 ID）、JSON Schema 规范化（修复 MCP 工具的 `required: null` / `properties: null`）、工具占位符生成、图片格式转换。核心函数：`convert_request()` 转换请求，`normalize_json_schema()` 修复 JSON Schema
+4. **Event Stream Parser** - `kiro/parser/`: AWS Event Stream 二进制协议解析（header + payload + CRC32C 校验）。核心组件：`decoder.rs` 流式解码器，`frame.rs` 帧解析，`crc.rs` CRC32C 校验
+5. **Buffered Stream** - `anthropic/stream.rs`: 两种流模式 — `StreamContext`（直接转发，用于 `/v1/messages`）和 `BufferedStreamContext`（缓冲所有事件，等 `contextUsageEvent` 到达后修正 input_tokens 再一次性发送，用于 `/cc/v1/messages`）。每 25 秒发送 ping 保活
+6. **Input Compressor** - `anthropic/compressor.rs`: 多层压缩管道（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），自动修复 tool_use/tool_result 配对以避免上游 400 错误。核心函数：`compress()` 执行压缩管道，返回 `CompressionStats` 统计信息
+7. **Image Processor** - `image.rs`: 图片处理（缩放、GIF 抽帧、token 计算）。GIF 抽帧策略：最多 20 帧、最多 5fps、按时长自适应采样间隔，输出为 JPEG 静态帧序列。核心函数：`process_image()` 处理单张图片，`process_gif_frames()` 处理 GIF 抽帧
 
 ## 共享状态
 
@@ -84,10 +93,15 @@ AppState {
 
 ## 凭据故障转移与冷却
 
-- 凭据按 `priority` 字段排序，优先使用高优先级凭据
+- 凭据按 `priority` 字段排序，优先使用高优先级凭据（数字越小优先级越高）
 - 请求失败时 `report_failure()` 触发故障转移到下一个可用凭据
-- 冷却分类管理：`FailureLimit` / `InsufficientBalance` / `ModelUnavailable` / `QuotaExceeded`
+- 冷却分类管理（见 `kiro/cooldown.rs`）：
+  - `FailureLimit`: 连续失败次数过多，冷却 5 分钟
+  - `InsufficientBalance`: 余额不足，冷却 1 小时
+  - `ModelUnavailable`: 模型不可用，冷却 10 分钟
+  - `QuotaExceeded`: 配额超限，冷却 1 小时
 - `MODEL_TEMPORARILY_UNAVAILABLE` 触发全局熔断，禁用所有凭据
+- 余额缓存动态 TTL：高频用户 10 分钟、低频用户 30 分钟、低余额用户 24 小时
 
 ## API 端点
 
@@ -98,19 +112,29 @@ AppState {
 - `/cc/v1/*` - Claude Code 兼容端点（同上，路径别名）
 
 **Admin API** (需配置 `adminApiKey`):
-- 凭据 CRUD、状态监控、余额查询
+- `GET /api/admin/credentials` - 获取所有凭据状态
+- `POST /api/admin/credentials` - 添加新凭据
+- `DELETE /api/admin/credentials/:id` - 删除凭据
+- `POST /api/admin/credentials/:id/disabled` - 设置凭据禁用状态
+- `POST /api/admin/credentials/:id/priority` - 设置凭据优先级
+- `POST /api/admin/credentials/:id/region` - 设置凭据 Region
+- `POST /api/admin/credentials/:id/reset` - 重置失败计数
+- `GET /api/admin/credentials/:id/balance` - 获取凭据余额
+- `GET /api/admin/credentials/:id/models` - 获取凭据可用模型列表（调用 Kiro `ListAvailableModels` API）
 
 ## 重要注意事项
 
-1. **构建顺序**: 必须先构建前端 `admin-ui`，再编译 Rust 后端（静态文件通过 `rust-embed` 嵌入，derive 宏为 `#[derive(Embed)]`）
-2. **凭据格式**: 支持单凭据（向后兼容）和多凭据（数组格式，支持 priority 字段）
-3. **重试策略**: 单凭据最多重试 2 次，单请求最多重试 3 次
+1. **构建顺序**: 必须先构建前端 `admin-ui`，再编译 Rust 后端（静态文件通过 `rust-embed` 嵌入，derive 宏为 `#[derive(Embed)]`）。如果修改了前端代码，需要重新 `make ui` 并重新编译后端
+2. **凭据格式**: 支持单凭据（向后兼容）和多凭据（数组格式，支持 priority 字段）。多凭据格式下 Token 刷新后会自动回写到源文件
+3. **重试策略**: 单凭据最多重试 2 次，单请求最多重试 3 次。失败时自动故障转移到下一个可用凭据
 4. **WebSearch 工具**: 仅当请求明确触发 WebSearch（`tool_choice` 强制 / 仅提供 `web_search` 单工具 / 消息前缀匹配）时走本地 WebSearch；否则从 `tools` 中剔除 `web_search` 后转发上游（避免误路由）
 5. **安全**: 使用 `subtle` 库进行常量时间比较防止时序攻击；Admin API Key 空字符串视为未配置
 6. **Prefill 处理**: Claude 4.x 已弃用 assistant prefill，末尾 assistant 消息被静默丢弃
-7. **sensitive-logs 特性**: 编译时 feature flag，启用后输出 token 用量诊断日志和请求体大小（默认关闭，仅用于排障）
+7. **sensitive-logs 特性**: 编译时 feature flag，启用后输出 token 用量诊断日志和请求体大小（默认关闭，仅用于排障）。生产环境不要启用此特性
 8. **网络错误分类**: 连接关闭/重置、发送失败等网络错误被归类为瞬态上游错误，返回 502（不记录请求体）
 9. **Rust edition**: 项目使用 Rust 2024 edition
-10. **图片处理**: GIF 会被抽帧并重编码为 JPEG 静态帧序列（最多 20 帧、最多 5fps），以降低请求体大小并提升内容识别效果。图片缩放规则：长边超过 4000px 或总像素超过 400 万时等比缩放
-11. **输入压缩**: 当请求体接近上游限制（约 5MB）时，自动执行多层压缩（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），并自动修复 tool_use/tool_result 配对以避免上游 400 错误
-12. **上游 400 排障**: 若遇到 `Improperly formed request` 错误，参考 `docs/troubleshooting/400-improperly-formed-request.md` 和 `tools/test_400_improperly_formed.py` 进行诊断
+10. **图片处理**: GIF 会被抽帧并重编码为 JPEG 静态帧序列（最多 20 帧、最多 5fps），以降低请求体大小并提升内容识别效果。图片缩放规则：长边超过 4000px 或总像素超过 400 万时等比缩放。JPEG 默认质量为 75
+11. **输入压缩**: 当请求体接近上游限制（约 5MB）时，自动执行多层压缩（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），并自动修复 tool_use/tool_result 配对以避免上游 400 错误。压缩配置见 `model/config.rs` 中的 `CompressionConfig`
+12. **上游 400 排障**: 若遇到 `Improperly formed request` 错误，参考 `docs/troubleshooting/400-improperly-formed-request.md` 和 `tools/test_400_improperly_formed.py` 进行诊断。常见原因：tool_use/tool_result 配对不一致、请求体过大（尤其是多图/GIF 场景）、JSON Schema 格式问题
+13. **TLS 后端选择**: 默认使用 `rustls`，如遇到证书问题或代理连接失败，可在 `config.json` 中设置 `"tlsBackend": "native-tls"` 切换到系统原生 TLS
+14. **代理配置**: 支持 HTTP/SOCKS5 代理，凭据级代理优先于全局代理。特殊值 `"direct"` 表示显式不使用代理（即使全局配置了代理）

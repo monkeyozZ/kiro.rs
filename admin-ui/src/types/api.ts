@@ -309,3 +309,25 @@ export interface ImportTokenJsonResponse {
   summary: ImportSummary
   items: ImportItemResult[]
 }
+
+// 可用模型列表响应
+export interface AvailableModelsResponse {
+  id: number
+  subscriptionTitle: string | null
+  availableModels: ModelItem[]
+}
+
+// 模型信息项
+export interface ModelItem {
+  modelId: string
+  modelName: string
+  description?: string
+  supportedInputTypes: string[]
+  tokenLimits?: ModelTokenLimits
+}
+
+// 模型 Token 限制
+export interface ModelTokenLimits {
+  maxInputTokens?: number
+  maxOutputTokens?: number
+}

@@ -104,6 +104,18 @@ pub async fn get_cached_balances(State(state): State<AdminState>) -> impl IntoRe
     Json(state.service.get_cached_balances())
 }
 
+/// GET /api/admin/credentials/:id/models
+/// 获取指定凭据的可用模型列表
+pub async fn get_available_models(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.get_available_models(id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// POST /api/admin/credentials
 /// 添加新凭据
 pub async fn add_credential(
