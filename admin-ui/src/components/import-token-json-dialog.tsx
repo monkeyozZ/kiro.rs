@@ -150,24 +150,97 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (!file) return
-    if (!file.name.endsWith('.json')) {
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length === 0) return
+
+    // 检查是否都是 JSON 文件
+    const nonJsonFiles = files.filter(f => !f.name.endsWith('.json'))
+    if (nonJsonFiles.length > 0) {
       toast.error('请上传 JSON 文件')
       return
     }
-    const reader = new FileReader()
-    reader.onload = (event) => setJsonText(event.target?.result as string)
-    reader.readAsText(file)
+
+    // 读取所有文件并合并
+    const fileReaders = files.map(file =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = (event) => resolve(event.target?.result as string)
+        reader.onerror = reject
+        reader.readAsText(file)
+      })
+    )
+
+    Promise.all(fileReaders)
+      .then((texts) => {
+        // 解析所有 JSON 并合并数组
+        const allItems: unknown[] = []
+        for (const text of texts) {
+          try {
+            const parsed = JSON.parse(text)
+            if (Array.isArray(parsed)) {
+              allItems.push(...parsed)
+            } else {
+              allItems.push(parsed)
+            }
+          } catch (err) {
+            console.error('Failed to parse JSON:', err)
+            toast.error(`解析 JSON 失败: ${err instanceof Error ? err.message : '未知错误'}`)
+          }
+        }
+        // 将合并后的数组转换回 JSON 字符串
+        setJsonText(JSON.stringify(allItems, null, 2))
+        toast.success(`已加载 ${files.length} 个文件，共 ${allItems.length} 条凭据`)
+      })
+      .catch((err) => {
+        console.error('Failed to read files:', err)
+        toast.error('读取文件失败')
+      })
   }, [])
 
   // 文件选择
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (event) => setJsonText(event.target?.result as string)
-    reader.readAsText(file)
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    // 读取所有文件并合并
+    const fileReaders: Promise<string>[] = []
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      fileReaders.push(
+        new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = (event) => resolve(event.target?.result as string)
+          reader.onerror = reject
+          reader.readAsText(file)
+        })
+      )
+    }
+
+    Promise.all(fileReaders)
+      .then((texts) => {
+        // 解析所有 JSON 并合并数组
+        const allItems: unknown[] = []
+        for (const text of texts) {
+          try {
+            const parsed = JSON.parse(text)
+            if (Array.isArray(parsed)) {
+              allItems.push(...parsed)
+            } else {
+              allItems.push(parsed)
+            }
+          } catch (err) {
+            console.error('Failed to parse JSON:', err)
+            toast.error(`解析 JSON 失败: ${err instanceof Error ? err.message : '未知错误'}`)
+          }
+        }
+        // 将合并后的数组转换回 JSON 字符串
+        setJsonText(JSON.stringify(allItems, null, 2))
+        toast.success(`已加载 ${files.length} 个文件，共 ${allItems.length} 条凭据`)
+      })
+      .catch((err) => {
+        console.error('Failed to read files:', err)
+        toast.error('读取文件失败')
+      })
   }, [])
 
   // 预览（dry-run）
@@ -383,12 +456,13 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
                   拖放 JSON 文件到此处，或点击选择文件
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  支持单个凭据或凭据数组格式
+                  支持单个凭据或凭据数组格式，可同时选择多个文件
                 </p>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".json"
+                  multiple
                   className="hidden"
                   onChange={handleFileSelect}
                 />
