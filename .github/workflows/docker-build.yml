@@ -57,13 +57,6 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -75,7 +68,6 @@ jobs:
           provenance: false
           tags: |
             docker.io/${{ secrets.DOCKER_USERNAME }}/kiro-rs:${{ steps.version.outputs.version }}-${{ matrix.arch }}
-            ghcr.io/${{ github.repository_owner }}/kiro-rs:${{ steps.version.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Kiro.rs Docker Image
@@ -93,18 +85,10 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create and push multi-arch manifest
         run: |
           VERSION="${{ needs.build.outputs.version }}"
           DOCKER_REPO="docker.io/${{ secrets.DOCKER_USERNAME }}/kiro-rs"
-          GHCR_REPO="ghcr.io/${{ github.repository_owner }}/kiro-rs"
 
           # Docker Hub manifest
           docker manifest create ${DOCKER_REPO}:${VERSION} \
@@ -116,14 +100,3 @@ jobs:
             ${DOCKER_REPO}:${VERSION}-amd64 \
             ${DOCKER_REPO}:${VERSION}-arm64
           docker manifest push ${DOCKER_REPO}:latest
-
-          # GitHub Container Registry manifest
-          docker manifest create ${GHCR_REPO}:${VERSION} \
-            ${GHCR_REPO}:${VERSION}-amd64 \
-            ${GHCR_REPO}:${VERSION}-arm64
-          docker manifest push ${GHCR_REPO}:${VERSION}
-
-          docker manifest create ${GHCR_REPO}:latest \
-            ${GHCR_REPO}:${VERSION}-amd64 \
-            ${GHCR_REPO}:${VERSION}-arm64
-          docker manifest push ${GHCR_REPO}:latest
