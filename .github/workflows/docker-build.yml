@@ -120,13 +120,19 @@ jobs:
             ${DOCKER_REPO}:${VERSION}-arm64
           docker manifest push ${DOCKER_REPO}:latest
 
-          # GitHub Container Registry manifest
-          docker manifest create ${GHCR_REPO}:${VERSION} \
-            ${GHCR_REPO}:${VERSION}-amd64 \
-            ${GHCR_REPO}:${VERSION}-arm64
-          docker manifest push ${GHCR_REPO}:${VERSION}
+          # GitHub Container Registry manifest (skip if images don't exist)
+          if docker manifest inspect ${GHCR_REPO}:${VERSION}-amd64 >/dev/null 2>&1 && \
+             docker manifest inspect ${GHCR_REPO}:${VERSION}-arm64 >/dev/null 2>&1; then
+            docker manifest create ${GHCR_REPO}:${VERSION} \
+              ${GHCR_REPO}:${VERSION}-amd64 \
+              ${GHCR_REPO}:${VERSION}-arm64
+            docker manifest push ${GHCR_REPO}:${VERSION}
 
-          docker manifest create ${GHCR_REPO}:latest \
-            ${GHCR_REPO}:${VERSION}-amd64 \
-            ${GHCR_REPO}:${VERSION}-arm64
-          docker manifest push ${GHCR_REPO}:latest
+            docker manifest create ${GHCR_REPO}:latest \
+              ${GHCR_REPO}:${VERSION}-amd64 \
+              ${GHCR_REPO}:${VERSION}-arm64
+            docker manifest push ${GHCR_REPO}:latest
+            echo "✓ GHCR manifests created successfully"
+          else
+            echo "⚠ Skipping GHCR manifest creation (images not found)"
+          fi
