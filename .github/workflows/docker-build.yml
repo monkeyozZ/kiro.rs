@@ -74,7 +74,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            docker.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ matrix.arch }}
+            docker.io/${{ secrets.DOCKER_USERNAME }}/kiro-rs:${{ steps.version.outputs.version }}-${{ matrix.arch }}
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -103,25 +103,27 @@ jobs:
       - name: Create and push multi-arch manifest
         run: |
           VERSION="${{ needs.build.outputs.version }}"
+          DOCKER_REPO="docker.io/${{ secrets.DOCKER_USERNAME }}/kiro-rs"
+          GHCR_REPO="ghcr.io/${{ github.repository }}"
 
           # Docker Hub manifest
-          docker manifest create docker.io/${{ github.repository }}:${VERSION} \
-            docker.io/${{ github.repository }}:${VERSION}-amd64 \
-            docker.io/${{ github.repository }}:${VERSION}-arm64
-          docker manifest push docker.io/${{ github.repository }}:${VERSION}
+          docker manifest create ${DOCKER_REPO}:${VERSION} \
+            ${DOCKER_REPO}:${VERSION}-amd64 \
+            ${DOCKER_REPO}:${VERSION}-arm64
+          docker manifest push ${DOCKER_REPO}:${VERSION}
 
-          docker manifest create docker.io/${{ github.repository }}:latest \
-            docker.io/${{ github.repository }}:${VERSION}-amd64 \
-            docker.io/${{ github.repository }}:${VERSION}-arm64
-          docker manifest push docker.io/${{ github.repository }}:latest
+          docker manifest create ${DOCKER_REPO}:latest \
+            ${DOCKER_REPO}:${VERSION}-amd64 \
+            ${DOCKER_REPO}:${VERSION}-arm64
+          docker manifest push ${DOCKER_REPO}:latest
 
           # GitHub Container Registry manifest
-          docker manifest create ghcr.io/${{ github.repository }}:${VERSION} \
-            ghcr.io/${{ github.repository }}:${VERSION}-amd64 \
-            ghcr.io/${{ github.repository }}:${VERSION}-arm64
-          docker manifest push ghcr.io/${{ github.repository }}:${VERSION}
+          docker manifest create ${GHCR_REPO}:${VERSION} \
+            ${GHCR_REPO}:${VERSION}-amd64 \
+            ${GHCR_REPO}:${VERSION}-arm64
+          docker manifest push ${GHCR_REPO}:${VERSION}
 
-          docker manifest create ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:${VERSION}-amd64 \
-            ghcr.io/${{ github.repository }}:${VERSION}-arm64
-          docker manifest push ghcr.io/${{ github.repository }}:latest
+          docker manifest create ${GHCR_REPO}:latest \
+            ${GHCR_REPO}:${VERSION}-amd64 \
+            ${GHCR_REPO}:${VERSION}-arm64
+          docker manifest push ${GHCR_REPO}:latest
