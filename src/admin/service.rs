@@ -404,7 +404,15 @@ impl AdminService {
             return AdminServiceError::NotFound { id };
         }
 
-        // 2. 上游服务错误特征：HTTP 响应错误或网络错误
+        // 2. 账号被封禁（特殊处理，已自动禁用凭据）
+        if msg.contains("账号已被封禁") || msg.contains("TEMPORARILY_SUSPENDED") {
+            return AdminServiceError::UpstreamError(format!(
+                "凭据 #{} 账号已被封禁，已自动禁用该凭据",
+                id
+            ));
+        }
+
+        // 3. 上游服务错误特征：HTTP 响应错误或网络错误
         let is_upstream_error =
             // HTTP 响应错误（来自 refresh_*_token 的错误消息）
             msg.contains("凭证已过期或无效") ||
@@ -422,7 +430,7 @@ impl AdminService {
         if is_upstream_error {
             AdminServiceError::UpstreamError(msg)
         } else {
-            // 3. 默认归类为内部错误（本地验证失败、配置错误等）
+            // 4. 默认归类为内部错误（本地验证失败、配置错误等）
             // 包括：缺少 refreshToken、refreshToken 已被截断、无法生成 machineId 等
             AdminServiceError::InternalError(msg)
         }

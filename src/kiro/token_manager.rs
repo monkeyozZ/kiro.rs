@@ -442,6 +442,12 @@ pub(crate) async fn get_usage_limits(
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
+
+        // 检测账号被封禁（TEMPORARILY_SUSPENDED）
+        if status.as_u16() == 403 && body_text.contains("TEMPORARILY_SUSPENDED") {
+            bail!("账号已被封禁: {} {}", status, body_text);
+        }
+
         let error_msg = match status.as_u16() {
             401 => "认证失败，Token 无效或已过期",
             403 => "权限不足，无法获取使用额度",
@@ -516,6 +522,12 @@ pub(crate) async fn list_available_models(
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
+
+        // 检测账号被封禁（TEMPORARILY_SUSPENDED）
+        if status.as_u16() == 403 && body_text.contains("TEMPORARILY_SUSPENDED") {
+            bail!("账号已被封禁: {} {}", status, body_text);
+        }
+
         let error_msg = match status.as_u16() {
             401 => "认证失败，Token 无效或已过期",
             403 => "权限不足，无法获取模型列表",
@@ -566,6 +578,8 @@ pub enum DisableReason {
     Manual,
     /// 额度已用尽（如 MONTHLY_REQUEST_COUNT）
     QuotaExceeded,
+    /// 账号被封禁（TEMPORARILY_SUSPENDED）
+    AccountSuspended,
 }
 
 /// 单个凭据条目的状态
@@ -603,6 +617,8 @@ enum AutoHealReason {
     /// 额度已用尽（如 MONTHLY_REQUEST_COUNT）
     #[allow(dead_code)]
     QuotaExceeded,
+    /// 账号被封禁（TEMPORARILY_SUSPENDED，不自动恢复）
+    AccountSuspended,
 }
 
 /// 统计数据持久化条目
@@ -2356,7 +2372,28 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
-        get_usage_limits(&credentials, &self.config, &token, self.proxy.as_ref()).await
+        match get_usage_limits(&credentials, &self.config, &token, self.proxy.as_ref()).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                let err_msg = e.to_string();
+                // 检测账号被封禁，自动禁用凭据
+                if err_msg.contains("账号已被封禁") || err_msg.contains("TEMPORARILY_SUSPENDED") {
+                    tracing::error!("凭据 #{} 账号已被封禁，自动禁用", id);
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.disabled = true;
+                        entry.auto_heal_reason = Some(AutoHealReason::AccountSuspended);
+                        entry.disable_reason = Some(DisableReason::AccountSuspended);
+                        entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+                    }
+                    drop(entries);
+                    // 持久化凭据状态
+                    let _ = self.persist_credentials();
+                    self.save_stats_debounced();
+                }
+                Err(e)
+            }
+        }
     }
 
     /// 获取指定凭据的可用模型列表（Admin API）
@@ -2427,7 +2464,28 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
-        list_available_models(&credentials, &self.config, &token, self.proxy.as_ref()).await
+        match list_available_models(&credentials, &self.config, &token, self.proxy.as_ref()).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                let err_msg = e.to_string();
+                // 检测账号被封禁，自动禁用凭据
+                if err_msg.contains("账号已被封禁") || err_msg.contains("TEMPORARILY_SUSPENDED") {
+                    tracing::error!("凭据 #{} 账号已被封禁，自动禁用", id);
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.disabled = true;
+                        entry.auto_heal_reason = Some(AutoHealReason::AccountSuspended);
+                        entry.disable_reason = Some(DisableReason::AccountSuspended);
+                        entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+                    }
+                    drop(entries);
+                    // 持久化凭据状态
+                    let _ = self.persist_credentials();
+                    self.save_stats_debounced();
+                }
+                Err(e)
+            }
+        }
     }
 
     /// 添加新凭据（Admin API）
